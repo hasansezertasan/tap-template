@@ -50,8 +50,14 @@ class DescTest(unittest.TestCase):
     def test_strips_article_and_period(self) -> None:
         self.assertEqual(af.clean_desc("A neat tool."), "neat tool")
 
+    def test_strips_lowercase_article(self) -> None:
+        """`brew audit --strict` rejects a leading article in either case."""
+        self.assertEqual(af.clean_desc("a tool for things."), "tool for things")
+        self.assertEqual(af.clean_desc("the widget"), "widget")
+
     def test_leaves_body_untouched(self) -> None:
         self.assertEqual(af.clean_desc("generic CLI"), "generic CLI")
+        self.assertEqual(af.clean_desc("Android build helper"), "Android build helper")
 
 
 class PythonSeriesTest(unittest.TestCase):
@@ -76,6 +82,44 @@ class PythonSeriesTest(unittest.TestCase):
     def test_series_tuple(self) -> None:
         self.assertEqual(af._series_tuple("3.14"), (3, 14))
         self.assertLess(af._series_tuple("3.13"), af._series_tuple("3.14"))
+
+
+
+class RubyEscapeTest(unittest.TestCase):
+    def test_escapes_quote_and_backslash(self) -> None:
+        self.assertEqual(af._rb_str('say "hi"'), 'say \\"hi\\"')
+        self.assertEqual(af._rb_str("back\\slash"), "back\\\\slash")
+
+    def test_escapes_interpolation_marker(self) -> None:
+        """`#{...}` in a double-quoted Ruby string runs code when the formula loads."""
+        self.assertEqual(af._rb_str("x #{system('rm -rf /')}"),
+                         "x \\#{system('rm -rf /')}")
+
+    def test_hostile_pypi_metadata_stays_inside_the_literal(self) -> None:
+        info = {"summary": 'A "quoted" #{system("boom")} tool', "project_urls": {},
+                "home_page": "", "license": "MIT", "classifiers": []}
+        rendered = af.render("foo", info, "https://e/x.tar.gz", "abc",
+                             "python@3.14", [("bar", "https://e/b.tar.gz", "def")], [])
+        desc = next(ln for ln in rendered.splitlines() if ln.startswith("  desc "))
+        # Every quote is backslash-escaped and the interpolation marker is inert,
+        # so the whole summary stays inside one Ruby string literal.
+        self.assertEqual(
+            desc,
+            '  desc "\\"quoted\\" \\#{system(\\"boom\\")} tool"',
+        )
+
+
+class TestCommandTest(unittest.TestCase):
+    def test_default_is_the_documented_guess(self) -> None:
+        self.assertEqual(af.default_test_command("foo"), "#{bin}/foo --version")
+
+    def test_override_is_used_verbatim(self) -> None:
+        info = {"summary": "Tool", "project_urls": {}, "home_page": "",
+                "license": "MIT", "classifiers": []}
+        rendered = af.render("foo", info, "https://e/x.tar.gz", "abc", "python@3.14",
+                             [], [], "#{bin}/foo version")
+        self.assertIn('shell_output("#{bin}/foo version")', rendered)
+        self.assertNotIn("--version", rendered)
 
 
 if __name__ == "__main__":

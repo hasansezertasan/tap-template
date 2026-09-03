@@ -8,8 +8,11 @@ scheduled updates, release-triggered updates, and a generated package catalog.
 
 1. Create a repository from this template. Name it `homebrew-<tap>` so users can
    install packages through the shorter `<owner>/<tap>` name.
-2. In **Settings → Actions → General**, give workflows read and write access and
-   allow GitHub Actions to create pull requests.
+2. In **Settings → Actions → General**, leave the default workflow permissions
+   **read-only** and tick *Allow GitHub Actions to create and approve pull
+   requests*. Every workflow here declares the write scopes it needs, so a
+   read-only default keeps a future workflow that forgets to from inheriting
+   them.
 3. Replace this introductory section with your tap's name and description.
 4. Add a formula or cask with one of the scaffolders below.
 5. Run `python3 scripts/gen_readme_packages.py` and commit the generated package
@@ -62,12 +65,15 @@ Or run it directly:
 
 ```sh
 python3 scripts/add_formula.py <package> [--extras a,b] [--python python@3.14] \
-  [--version X.Y.Z] [--check] [--tap owner/tap]
+  [--version X.Y.Z] [--test-command CMD] [--check] [--tap owner/tap]
 ```
 
-The generated smoke test assumes the CLI supports `--version`. Check the actual
-command before committing. Add system dependencies manually when the package
-needs libraries that cannot be inferred from Python metadata.
+The generated smoke test assumes the CLI is named after the package and supports
+`--version`. PyPI's JSON API does not expose console scripts, so that is a guess:
+check the real command and pass `--test-command '#{bin}/<name> version'` when it
+differs, or when the package ships no executable at all. Add system dependencies
+manually when the package needs libraries that cannot be inferred from Python
+metadata.
 
 ## Add a cask
 

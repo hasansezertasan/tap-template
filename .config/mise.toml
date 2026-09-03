@@ -16,7 +16,8 @@ run = "python3 scripts/add_cask.py"
 
 [tasks."check-boilerplate"]
 description = "Verify Cobo-managed files match cobo.lock"
-run = "cobo check"
+# Pinned to match scripts.yml, so a local check and CI agree on the renderer.
+run = "uvx cobo==0.5.0 check"
 
 [tasks."hooks"]
 description = "Install the prek git hooks"
@@ -36,7 +37,8 @@ run = "yamlfmt -conf .config/.yamlfmt.yml ."
 
 [tasks."style:check"]
 description = "Lint YAML and GitHub Actions files (no fixes)"
-run = """
+# A TOML *literal* multi-line string: the find below needs real backslashes.
+run = '''
 #!/usr/bin/env bash
 set -e
 echo "Running yamllint..."
@@ -44,8 +46,9 @@ yamllint -c .config/.yamllint.yaml .
 echo "Running actionlint..."
 actionlint
 echo "Running action-validator..."
-find .github/workflows -name '*.yml' -exec action-validator {} +
+# GitHub accepts both extensions for workflows; neither may bypass validation.
+find .github/workflows \( -name '*.yml' -o -name '*.yaml' \) -exec action-validator {} +
 echo "Running zizmor..."
 zizmor --persona=regular .github/workflows
 echo "All checks passed!"
-"""
+'''

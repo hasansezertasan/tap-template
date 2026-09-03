@@ -134,12 +134,20 @@ jobs:
             # whole run, so failures are downgraded to warnings.
             if brew bump-formula-pr --no-audit --no-browse --write-only \
               --version="$latest" "$ref"; then
-              brew update-python-resources "$ref" \
-                || echo "::warning::update-python-resources failed for $formula"
-              if brew audit --strict --online "$ref"; then
+              # A virtualenv formula's resource blocks must be re-resolved: bump
+              # does NOT touch them. A failure here leaves stale dependency pins
+              # that `brew audit` cannot detect (it checks style and metadata,
+              # not the resolved tree), so treat it exactly like a failed audit
+              # and revert rather than shipping the bump.
+              resources_ok=true
+              if grep -q "virtualenv_install_with_resources" "Formula/${formula}.rb"; then
+                brew update-python-resources "$ref" || resources_ok=false
+              fi
+              if [ "$resources_ok" = true ] && brew audit --strict --online "$ref"; then
                 echo "Updated $formula to $latest"
               else
-                echo "::warning::$formula bumped to $latest but failed audit; reverting"
+                echo "::warning::$formula bumped to $latest but failed resource" \
+                  "resolution or audit; reverting"
                 git checkout -- "Formula/${formula}.rb"
               fi
             else

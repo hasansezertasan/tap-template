@@ -78,7 +78,10 @@ def clean_desc(summary: str) -> str:
     Strips a leading article and trailing period, then capitalizes the first letter
     (``brew audit --strict`` requires a ``desc`` that starts with a capital).
     """
-    desc = re.sub(r"^(?:A|An|The)\s+", "", (summary or "").strip().rstrip("."))
+    # Case-insensitive: a lowercase "a "/"the " prefix is just as much a leading
+    # article, and `brew audit --strict` rejects it either way.
+    desc = re.sub(r"^(?:an?|the)\s+", "", (summary or "").strip().rstrip("."),
+                  flags=re.IGNORECASE)
     return desc[:1].upper() + desc[1:] if desc else desc
 
 
@@ -138,9 +141,20 @@ def _rb_str(value: str) -> str:
 
     Cask files are Ruby evaluated by ``brew audit``/``install``; an unescaped quote
     or backslash from GitHub-supplied metadata (desc, homepage, tag) would otherwise
-    break out of the string literal.
+    break out of the string literal, and ``#{...}`` would interpolate — running
+    arbitrary Ruby the moment the cask is loaded.
+
+    Because this escapes ``#{`` too, the ordering rule for anything version-templated
+    is: **escape the untrusted parts first, then** :func:`templatize`, and never
+    escape again downstream. A version string is digits and dots, so it survives
+    escaping unchanged and templatize still finds it. Escaping afterwards would
+    neutralise the ``#{version}`` marker that lets ``brew bump-cask-pr`` rewrite the
+    version in one place.
     """
-    return value.replace("\\", "\\\\").replace('"', '\\"')
+    return (value.replace("\\", "\\\\")
+                 .replace('"', '\\"')
+                 .replace("#{", "\\#{"))
+
 
 
 def stanza_for(stanza_artifact: str, artifact: str, token: str) -> tuple[str, str]:
@@ -152,7 +166,9 @@ def stanza_for(stanza_artifact: str, artifact: str, token: str) -> tuple[str, st
     unpacking it, so we guess ``<token>.app`` and flag it for verification.
     """
     if artifact.endswith(".pkg"):
-        return f'  pkg "{_rb_str(stanza_artifact)}"', ""
+        # stanza_artifact is already escaped and version-templated by the caller;
+        # re-escaping would neutralise its #{version} marker.
+        return f'  pkg "{stanza_artifact}"', ""
     return (f'  app "{_rb_str(token)}.app"',
             f'the .app name inside {artifact} is a guess ("{token}.app") — verify it')
 
@@ -165,7 +181,9 @@ def render(token: str, repo: str, version: str, sha: str,
         f'  version "{_rb_str(version)}"',
         f'  sha256 "{_rb_str(sha)}"',
         "",
-        f'  url "{_rb_str(url_template)}"',
+        # Already escaped and templated by url_stanza_value(); re-escaping here
+        # would neutralise the deliberate #{version} marker.
+        f'  url "{url_template}"',
         f'  name "{_rb_str(repo)}"',
         f'  desc "{_rb_str(desc)}"',
         f'  homepage "{_rb_str(homepage)}"',
@@ -219,9 +237,9 @@ def main() -> None:
         # tag and a static artifact name) and template a URL the first bump can correct.
         artifact = args.artifact or f"{token}.dmg"
         version, sha = _PLACEHOLDER_VERSION, _PLACEHOLDER_SHA
-        stanza_artifact = artifact
-        url_template = (f"https://github.com/{owner}/{repo}/releases/download/"
-                        f"v#{{version}}/{artifact}")
+        stanza_artifact = _rb_str(artifact)
+        url_template = (f"https://github.com/{_rb_str(owner)}/{_rb_str(repo)}"
+                        f"/releases/download/v#{{version}}/{stanza_artifact}")
         print("==> Seeding placeholder cask. VERIFY these guessed URL conventions "
               "against the first real release (edit the cask if they differ):\n"
               f"      tag pattern: v#{{version}}   artifact: {artifact}\n"
@@ -244,9 +262,12 @@ def main() -> None:
         # Rebuild the URL from the tag + filename, templated on the version so
         # `brew bump-cask-pr` (and livecheck) can bump it in place. Reuse the same
         # templated filename in the pkg stanza so it tracks the URL across bumps.
-        stanza_artifact = templatize(artifact, version)
-        url_template = (f"https://github.com/{owner}/{repo}/releases/download/"
-                        f"{templatize(tag, version)}/{stanza_artifact}")
+        # Escape before templatize (see _rb_str): the tag and asset name are
+        # upstream-controlled, but the #{version} marker added here must stay live.
+        stanza_artifact = templatize(_rb_str(artifact), version)
+        url_template = (f"https://github.com/{_rb_str(owner)}/{_rb_str(repo)}"
+                        f"/releases/download/{templatize(_rb_str(tag), version)}"
+                        f"/{stanza_artifact}")
 
     stanza, hint = stanza_for(stanza_artifact, artifact, token)
 

@@ -88,7 +88,9 @@ def spdx_license(info: dict) -> str:
 def clean_desc(summary: str) -> str:
     """Format a PyPI summary as a Homebrew ``desc`` (no leading article, no period)."""
     desc = summary.strip().rstrip(".")
-    return re.sub(r"^(?:A|An|The)\s+", "", desc)
+    # Case-insensitive: a lowercase "a "/"the " prefix is just as much a leading
+    # article, and `brew audit --strict` rejects it either way.
+    return re.sub(r"^(?:an?|the)\s+", "", desc, flags=re.IGNORECASE)
 
 
 def min_python(requires_python: str | None) -> str | None:
@@ -174,21 +176,48 @@ def sdist_for(name: str, version: str) -> tuple[str, str, bool]:
     return entry["url"], entry["digests"]["sha256"], False
 
 
+def _rb_str(value: str) -> str:
+    """Escape a value for a double-quoted Ruby string literal in the generated formula.
+
+    Formula files are Ruby, evaluated by ``brew audit``/``install``. PyPI metadata is
+    upstream-controlled for an arbitrary package, so an unescaped quote or backslash
+    would break out of the literal, and ``#{...}`` would interpolate — running
+    arbitrary Ruby the moment the formula is loaded. Mirrors ``_rb_str`` in
+    ``add_cask.py``.
+    """
+    return (value.replace("\\", "\\\\")
+                 .replace('"', '\\"')
+                 .replace("#{", "\\#{"))
+
+
+def default_test_command(name: str) -> str:
+    """Best-guess smoke test for a CLI whose console script cannot be introspected.
+
+    PyPI's JSON API does not expose ``console_scripts``, so the executable name and
+    its version flag are a guess: many CLIs use a bare ``version`` subcommand, and a
+    library with no console script has no executable at all. Override with
+    ``--test-command``; both README and the ``homebrew-add`` skill call this out as a
+    required human check before committing.
+    """
+    return f"#{{bin}}/{name} --version"
+
+
 def render(name: str, info: dict, sdist_url: str, sdist_sha: str,
            python_formula: str, resources: list[tuple[str, str, str]],
-           build_deps: list[str]) -> str:
+           build_deps: list[str], test_command: str | None = None) -> str:
     """Render the Ruby formula source."""
+    test_command = test_command or default_test_command(name)
     homepage = (info.get("project_urls") or {}).get("Homepage") \
         or info.get("home_page") or f"https://pypi.org/project/{name}/"
     lines = [
         f"class {class_name(name)} < Formula",
         "  include Language::Python::Virtualenv",
         "",
-        f'  desc "{clean_desc(info["summary"])}"',
-        f'  homepage "{homepage}"',
-        f'  url "{sdist_url}"',
-        f'  sha256 "{sdist_sha}"',
-        f'  license "{spdx_license(info)}"',
+        f'  desc "{_rb_str(clean_desc(info["summary"] or ""))}"',
+        f'  homepage "{_rb_str(homepage)}"',
+        f'  url "{_rb_str(sdist_url)}"',
+        f'  sha256 "{_rb_str(sdist_sha)}"',
+        f'  license "{_rb_str(spdx_license(info))}"',
         "",
         "  livecheck do",
         "    url :stable",
@@ -205,9 +234,9 @@ def render(name: str, info: dict, sdist_url: str, sdist_sha: str,
     ]
     for res_name, url, sha in resources:
         lines += [
-            f'  resource "{res_name}" do',
-            f'    url "{url}"',
-            f'    sha256 "{sha}"',
+            f'  resource "{_rb_str(res_name)}" do',
+            f'    url "{_rb_str(url)}"',
+            f'    sha256 "{_rb_str(sha)}"',
             "  end",
             "",
         ]
@@ -217,7 +246,7 @@ def render(name: str, info: dict, sdist_url: str, sdist_sha: str,
         "  end",
         "",
         "  test do",
-        f'    assert_match version.to_s, shell_output("#{{bin}}/{name} --version")',
+        f'    assert_match version.to_s, shell_output("{test_command}")',
         "  end",
         "end",
         "",
@@ -256,8 +285,12 @@ def main() -> None:
     parser.add_argument("--extras", default="",
                         help="comma-separated extras to include (e.g. 'tui')")
     parser.add_argument("--version", help="package version (default: latest on PyPI)")
-    parser.add_argument("--python",
+    parser.add_argument("--python", metavar="python@3.X",
                         help="override python formula (e.g. 'python@3.13')")
+    parser.add_argument("--test-command", metavar="CMD",
+                        help="smoke test command for `test do` (default: "
+                             "'#{bin}/<name> --version'); use when the CLI's version "
+                             "flag differs or the package ships no console script")
     parser.add_argument("--check", action="store_true",
                         help="audit, build-from-source, and test the result")
     parser.add_argument("--tap", help="tap name used by --check (default: infer from origin)")
@@ -270,6 +303,9 @@ def main() -> None:
     sdist_url, sdist_sha, _ = sdist_for(info["name"], version)
 
     if args.python:
+        # `--python python` would otherwise raise IndexError on the split below.
+        if not re.fullmatch(r"python@3\.\d+", args.python):
+            parser.error(f"--python must look like 'python@3.13', got {args.python!r}")
         series = args.python.split("@", 1)[1]
     else:
         # Default to the tap's current interpreter, but honor a package whose
@@ -319,7 +355,7 @@ def main() -> None:
     out = repo / "Formula" / f"{name}.rb"
     out.write_text(
         render(name, info, sdist_url, sdist_sha, python_formula, resources,
-               build_deps))
+               build_deps, args.test_command))
     print(f"==> Wrote {out.relative_to(repo)} "
           f"({len(resources)} resources, {python_formula})")
 

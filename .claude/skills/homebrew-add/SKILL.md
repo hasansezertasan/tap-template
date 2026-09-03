@@ -36,6 +36,7 @@ ships both, make both (see *Ships both* below).
 ```bash
 mise run add-formula <package>                      # or: python3 scripts/add_formula.py <package>
 mise run add-formula <package> --extras tui --check # pin extras up front; --check audits+builds+tests
+mise run add-formula <package> --test-command '#{bin}/<package> version'  # non-standard version flag
 ```
 
 The script resolves the full dependency tree to sdists, pins sha256s, adds a `:pypi`
@@ -43,8 +44,11 @@ livecheck, and picks `python@3.x`. Then verify the touch-ups it **can't** infer:
 
 - **System (non-Python) libraries** → add `depends_on` by hand (e.g. PyYAML needs
   `depends_on "libyaml"`). Rust for `pydantic-core` is auto-added.
-- **Test command** — the generated `test do` assumes `<name> --version`. Check the CLI:
-  some use `version` with no dashes, or another subcommand.
+- **Test command** — the generated `test do` assumes `<name> --version`. PyPI does
+  not expose console scripts, so that is a guess: check the CLI (some use `version`
+  with no dashes, or another subcommand) and pass
+  `--test-command '#{bin}/<name> version'` when it differs. A package that ships no
+  executable needs the assertion replaced with a real smoke test.
 - **Python version** — only override with `--python python@3.13` if a dep lacks wheels
   for the default.
 

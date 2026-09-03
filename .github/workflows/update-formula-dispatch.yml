@@ -105,9 +105,16 @@ jobs:
             --version="$RESOLVED_VERSION" \
             "$ref"
 
-          # Update Python resources (may fail for non-Python packages)
-          brew update-python-resources "$ref" \
-            || echo "Note: update-python-resources failed for $FORMULA (may not be a Python package)"
+          # A virtualenv formula's resource blocks must be re-resolved: bump does
+          # NOT touch them. Skip the command for a formula that has no resources,
+          # but let a genuine failure fail the job — `brew audit` below checks
+          # style and metadata, not the resolved dependency tree, so it cannot
+          # catch stale pins and an unverified bump must not reach a PR.
+          if grep -q "virtualenv_install_with_resources" "Formula/${FORMULA}.rb"; then
+            brew update-python-resources "$ref"
+          else
+            echo "$FORMULA has no virtualenv resources; skipping update-python-resources"
+          fi
 
           # The PR is opened with GITHUB_TOKEN and so won't trigger tests.yml.
           # Audit HERE instead so the auto-PR is verified inside the run that

@@ -31,6 +31,15 @@ normally; only the mirrored, lockfile-derived skills are ignored.
 * Bad, because `.claude/skills/` now mixes tracked first-party skills with
   ignored generated symlinks, so adding a first-party skill means adding a
   negation line to `.gitignore`.
+* Bad, because the lockfile records a `computedHash` but nothing enforces it.
+  The Skills CLI has no flag for pinning a source to an immutable commit
+  (`skills add` takes no `--ref`, `--tag`, or `--commit`), and
+  `experimental_install` restores from the mutable `source` rather than
+  verifying the recorded hash. A restore therefore fetches whatever the upstream
+  default branch holds at that moment. Review a restored skill before trusting
+  it, and treat a `computedHash` change in a lockfile diff as a real review
+  item. Enforcement has to come from the CLI; it cannot be added here without
+  hand-editing a generated file the CLI would overwrite.
 
 ## Related Research
 

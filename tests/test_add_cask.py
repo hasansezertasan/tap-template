@@ -40,7 +40,11 @@ class ParseRepoTest(unittest.TestCase):
 
 class DescTest(unittest.TestCase):
     def test_capitalizes_and_strips(self) -> None:
-        self.assertEqual(ac.clean_desc("a neat app."), "A neat app")
+        # A lowercase leading article is stripped like an uppercase one, and the
+        # remaining first letter is capitalized for `brew audit --strict`.
+        self.assertEqual(ac.clean_desc("a neat app."), "Neat app")
+        self.assertEqual(ac.clean_desc("An app."), "App")
+        self.assertEqual(ac.clean_desc("the widget"), "Widget")
 
     def test_empty(self) -> None:
         self.assertEqual(ac.clean_desc(""), "")
