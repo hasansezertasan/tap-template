@@ -1,0 +1,45 @@
+---
+name: brew pr-pull
+on:
+  # pull_request_target is required: `brew pr-pull` needs a write token to pull
+  # bottles and push to main, which a fork's `pull_request` run cannot get. Safe
+  # here because no PR code is ever checked out or executed — the job only runs
+  # `brew pr-pull` against the labeled PR number, and the `pr-pull` label is
+  # applied by a maintainer.
+  pull_request_target:  # zizmor: ignore[dangerous-triggers]
+    types:
+      - labeled
+# Deny-by-default; each job opts back into exactly what it needs.
+permissions: {}
+jobs:
+  pr-pull:
+    timeout-minutes: 15
+    if: contains(github.event.pull_request.labels.*.name, 'pr-pull')
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      checks: read
+      contents: write
+      issues: read
+      pull-requests: write
+    steps:
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@c69e528904c52915e7f40e120fc7d49773bbb2a0  # main
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up git
+        uses: Homebrew/actions/git-user-config@c69e528904c52915e7f40e120fc7d49773bbb2a0  # main
+      - name: Pull bottles
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+        run: brew pr-pull --debug --tap="$GITHUB_REPOSITORY" "$PULL_REQUEST"
+      - name: Push commits
+        uses: Homebrew/actions/git-try-push@c69e528904c52915e7f40e120fc7d49773bbb2a0  # main
+        with:
+          branch: main
+      - name: Delete branch
+        if: github.event.pull_request.head.repo.fork == false
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: git push --delete origin "$BRANCH"

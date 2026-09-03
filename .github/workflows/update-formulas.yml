@@ -1,0 +1,168 @@
+---
+name: Update Formulas
+on:
+  schedule:
+    # Run weekly on Mondays at 9:00 UTC
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      formula:
+        description: "Specific formula to update (leave empty for all)"
+        required: false
+        type: string
+      dry_run:
+        description: "Dry run (check only, no PR)"
+        required: false
+        type: boolean
+        default: false
+# Deny-by-default; each job opts back into exactly what it needs.
+permissions: {}
+jobs:
+  check-updates:
+    timeout-minutes: 10
+    name: Check for updates
+    runs-on: ubuntu-latest
+    outputs:
+      updates: ${{ steps.check.outputs.updates }}
+      has_updates: ${{ steps.check.outputs.has_updates }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@c69e528904c52915e7f40e120fc7d49773bbb2a0  # main
+      - name: Check for formula updates
+        id: check
+        # Read the workflow_dispatch input through env (never interpolate
+        # ${{ ... }} into the script body) to match the dispatch receivers'
+        # injection-safe handling.
+        env:
+          INPUT_FORMULA: ${{ inputs.formula }}
+        run: |
+          # Get list of formulas to check
+          if [ -n "$INPUT_FORMULA" ]; then
+            formulas="$INPUT_FORMULA"
+          else
+            formulas=$(find Formula -name '*.rb' -exec basename {} .rb \; | tr '\n' ' ')
+          fi
+
+          echo "Checking formulas: $formulas"
+
+          # Use brew livecheck to check for updates
+          updates_json="[]"
+          has_updates="false"
+
+          for formula in $formulas; do
+            # Skip deprecated/disabled formulae: upstream is frozen, so livecheck
+            # only adds noise (and any "update" would be spurious).
+            if grep -qE '^\s*(deprecate|disable)!' "Formula/${formula}.rb" 2>/dev/null; then
+              echo "Skipping $formula (deprecated/disabled)"
+              continue
+            fi
+
+            echo "Checking $formula..."
+
+            # Run livecheck and capture output
+            repository="${GITHUB_REPOSITORY#*/}"
+            tap="${GITHUB_REPOSITORY_OWNER}/${repository#homebrew-}"
+            livecheck_output=$(brew livecheck --json "${tap}/${formula}" 2>/dev/null || echo "[]")
+
+            # Check if there's an update (version.outdated == true)
+            is_outdated=$(echo "$livecheck_output" | jq -r '.[0].version.outdated // false')
+
+            if [ "$is_outdated" = "true" ]; then
+              current=$(echo "$livecheck_output" | jq -r '.[0].version.current')
+              latest=$(echo "$livecheck_output" | jq -r '.[0].version.latest')
+              echo "  Update available: $current -> $latest"
+
+              # Add to updates array
+              updates_json=$(echo "$updates_json" | jq -c --arg f "$formula" --arg c "$current" --arg l "$latest" \
+                '. + [{"formula": $f, "current_version": $c, "latest_version": $l}]')
+              has_updates="true"
+            else
+              echo "  Up to date"
+            fi
+          done
+
+          echo "updates=$updates_json" >> "$GITHUB_OUTPUT"
+          echo "has_updates=$has_updates" >> "$GITHUB_OUTPUT"
+  update-formulas:
+    timeout-minutes: 20
+    name: Update formulas
+    # macOS runner: brew update-python-resources re-resolves each formula's
+    # dependency tree on the host platform. macOS-only formulae can pin
+    # platform-specific backends that a Linux resolve would incorrectly swap.
+    # Resolving
+    # on macOS is also correct for every other formula, since bottles are built
+    # on macOS. Mirrors update-casks.yml. check-updates stays on ubuntu (the
+    # livecheck-only job doesn't resolve resources).
+    runs-on: macos-latest
+    needs: check-updates
+    if: needs.check-updates.outputs.has_updates == 'true' && inputs.dry_run != true
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@c69e528904c52915e7f40e120fc7d49773bbb2a0  # main
+      - name: Update formulas
+        env:
+          UPDATES_JSON: ${{ needs.check-updates.outputs.updates }}
+        run: |
+          echo "$UPDATES_JSON" | jq -c '.[]' | while read -r update; do
+            formula=$(echo "$update" | jq -r '.formula')
+            latest=$(echo "$update" | jq -r '.latest_version')
+
+            echo "::group::Updating $formula to $latest"
+
+            repository="${GITHUB_REPOSITORY#*/}"
+            tap="${GITHUB_REPOSITORY_OWNER}/${repository#homebrew-}"
+            ref="${tap}/${formula}"
+
+            # bump-formula-pr rewrites URL + sha256; update-python-resources then
+            # regenerates the resource blocks (bump alone does NOT touch them).
+            #
+            # PRs opened with GITHUB_TOKEN don't trigger tests.yml, so — as in the
+            # cask workflows — verify the bump inline with `brew audit` and revert
+            # the file if it fails, so a bad bump is excluded from the PR rather
+            # than shipped unverified. A single formula failing must not abort the
+            # whole run, so failures are downgraded to warnings.
+            if brew bump-formula-pr --no-audit --no-browse --write-only \
+              --version="$latest" "$ref"; then
+              brew update-python-resources "$ref" \
+                || echo "::warning::update-python-resources failed for $formula"
+              if brew audit --strict --online "$ref"; then
+                echo "Updated $formula to $latest"
+              else
+                echo "::warning::$formula bumped to $latest but failed audit; reverting"
+                git checkout -- "Formula/${formula}.rb"
+              fi
+            else
+              echo "::warning::Failed to update $formula to $latest; skipping (see logs above)"
+            fi
+
+            echo "::endgroup::"
+          done
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: update formula versions"
+          title: "chore: update formula versions"
+          body: |
+            Automated formula version updates.
+
+            Updates:
+            ```json
+            ${{ needs.check-updates.outputs.updates }}
+            ```
+
+            ---
+            *This PR was automatically created by the update-formulas workflow.*
+          branch: auto-update/formulas
+          delete-branch: true

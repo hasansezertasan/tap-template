@@ -1,0 +1,155 @@
+---
+name: Update Casks
+on:
+  schedule:
+    # Run weekly on Mondays at 9:15 UTC (staggered after Update Formulas)
+    - cron: "15 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      cask:
+        description: "Specific cask to update (leave empty for all)"
+        required: false
+        type: string
+      dry_run:
+        description: "Dry run (check only, no PR)"
+        required: false
+        type: boolean
+        default: false
+# Deny-by-default; each job opts back into exactly what it needs.
+permissions: {}
+jobs:
+  check-updates:
+    timeout-minutes: 10
+    name: Check for updates
+    # macOS: brew rejects cask subcommands (livecheck --cask, bump-cask-pr) on Linux.
+    runs-on: macos-latest
+    outputs:
+      updates: ${{ steps.check.outputs.updates }}
+      has_updates: ${{ steps.check.outputs.has_updates }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@c69e528904c52915e7f40e120fc7d49773bbb2a0  # main
+      - name: Check for cask updates
+        id: check
+        # Read the workflow_dispatch input through env (never interpolate
+        # ${{ ... }} into the script body) to match the dispatch receivers'
+        # injection-safe handling.
+        env:
+          INPUT_CASK: ${{ inputs.cask }}
+        run: |
+          # Get list of casks to check
+          if [ -n "$INPUT_CASK" ]; then
+            casks="$INPUT_CASK"
+          else
+            casks=$(find Casks -name '*.rb' -exec basename {} .rb \; | tr '\n' ' ')
+          fi
+
+          echo "Checking casks: $casks"
+
+          # Use brew livecheck to check for updates
+          updates_json="[]"
+          has_updates="false"
+
+          for cask in $casks; do
+            echo "Checking $cask..."
+
+            # Run livecheck and capture output
+            repository="${GITHUB_REPOSITORY#*/}"
+            tap="${GITHUB_REPOSITORY_OWNER}/${repository#homebrew-}"
+            livecheck_output=$(brew livecheck --cask --json "${tap}/${cask}" 2>/dev/null || echo "[]")
+
+            # Check if there's an update (version.outdated == true)
+            is_outdated=$(echo "$livecheck_output" | jq -r '.[0].version.outdated // false')
+
+            if [ "$is_outdated" = "true" ]; then
+              current=$(echo "$livecheck_output" | jq -r '.[0].version.current')
+              latest=$(echo "$livecheck_output" | jq -r '.[0].version.latest')
+              echo "  Update available: $current -> $latest"
+
+              # Add to updates array
+              updates_json=$(echo "$updates_json" | jq -c --arg c "$cask" --arg cur "$current" --arg l "$latest" \
+                '. + [{"cask": $c, "current_version": $cur, "latest_version": $l}]')
+              has_updates="true"
+            else
+              echo "  Up to date"
+            fi
+          done
+
+          echo "updates=$updates_json" >> "$GITHUB_OUTPUT"
+          echo "has_updates=$has_updates" >> "$GITHUB_OUTPUT"
+  update-casks:
+    timeout-minutes: 20
+    name: Update casks
+    # macOS: bump-cask-pr is a cask subcommand and is rejected on Linux.
+    runs-on: macos-latest
+    needs: check-updates
+    if: needs.check-updates.outputs.has_updates == 'true' && inputs.dry_run != true
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@c69e528904c52915e7f40e120fc7d49773bbb2a0  # main
+      - name: Update casks
+        env:
+          UPDATES_JSON: ${{ needs.check-updates.outputs.updates }}
+        run: |
+          echo "$UPDATES_JSON" | jq -c '.[]' | while read -r update; do
+            cask=$(echo "$update" | jq -r '.cask')
+            latest=$(echo "$update" | jq -r '.latest_version')
+
+            echo "::group::Updating $cask to $latest"
+
+            repository="${GITHUB_REPOSITORY#*/}"
+            tap="${GITHUB_REPOSITORY_OWNER}/${repository#homebrew-}"
+            ref="${tap}/${cask}"
+
+            # Use brew bump-cask-pr to update the cask (without creating PR).
+            # This rewrites version + recomputes sha256 from the new download.
+            # A single cask failing (e.g. an asset that 404s for the new tag)
+            # must not abort the whole run, so the failure is downgraded to a
+            # warning and the loop continues.
+            #
+            # PRs opened with GITHUB_TOKEN don't trigger tests.yml, so verify the
+            # bump inline with `brew audit` and revert the file if it fails — a
+            # bad bump is then simply excluded from the PR rather than shipped.
+            if brew bump-cask-pr --no-audit --no-browse --write-only \
+              --version="$latest" "$ref"; then
+              if brew audit --cask --strict --online "$ref"; then
+                echo "Updated $cask to $latest"
+              else
+                echo "::warning::$cask bumped to $latest but failed audit; reverting"
+                git checkout -- "Casks/${cask}.rb"
+              fi
+            else
+              echo "::warning::Failed to update $cask to $latest; skipping (see logs above)"
+            fi
+
+            echo "::endgroup::"
+          done
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: update cask versions"
+          title: "chore: update cask versions"
+          body: |
+            Automated cask version updates.
+
+            Updates:
+            ```json
+            ${{ needs.check-updates.outputs.updates }}
+            ```
+
+            ---
+            *This PR was automatically created by the update-casks workflow.*
+          branch: auto-update/casks
+          delete-branch: true

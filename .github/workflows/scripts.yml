@@ -1,0 +1,58 @@
+---
+name: Scripts
+# Unit tests for the stdlib scaffolder scripts (scripts/add_formula.py,
+# scripts/add_cask.py). Kept separate from the Homebrew-native tests.yml
+# (brew test-bot / bottle builds): this runs only when the Python scripts or
+# their tests change. Formula, cask, and README edits also run the catalog
+# freshness check; Cobo-managed file edits verify the lockfile.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/**"
+      - "tests/**"
+      - "Formula/**"
+      - "Casks/**"
+      - "README.md"
+      - ".gitignore"
+      - "cobo.lock"
+      - ".github/workflows/scripts.yml"
+  pull_request:
+    paths:
+      - "scripts/**"
+      - "tests/**"
+      - "Formula/**"
+      - "Casks/**"
+      - "README.md"
+      - ".gitignore"
+      - "cobo.lock"
+      - ".github/workflows/scripts.yml"
+# Deny-by-default; each job opts back into exactly what it needs.
+permissions: {}
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # This job only runs offline unit tests — no authenticated git ops — so
+          # don't leave the checkout token configured in the workspace git config.
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Run scaffolder tests
+        run: python -m unittest discover -s tests -v
+      - name: Check README packages table is up to date
+        run: python scripts/gen_readme_packages.py --check
+      - name: Check Cobo-managed boilerplate
+        run: |
+          python -m pip install cobo==0.5.0
+          cobo check

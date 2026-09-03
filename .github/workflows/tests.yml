@@ -1,0 +1,153 @@
+---
+name: brew test-bot
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Formula/**"
+      - "Casks/**"
+      - ".github/workflows/tests.yml"
+  pull_request:
+    paths:
+      - "Formula/**"
+      - "Casks/**"
+      - ".github/workflows/tests.yml"
+# Deny-by-default; each job opts back into exactly what it needs.
+permissions: {}
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  syntax:
+    name: tap-syntax
+    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Set up Homebrew
+        id: set-up-homebrew
+        uses: Homebrew/actions/setup-homebrew@c69e528904c52915e7f40e120fc7d49773bbb2a0  # main
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Cache Homebrew Bundler RubyGems
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ steps.set-up-homebrew.outputs.gems-path }}
+          key: ubuntu-24.04-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
+          restore-keys: ubuntu-24.04-rubygems-
+      - run: brew test-bot --only-cleanup-before
+      - run: brew test-bot --only-setup
+      - run: brew test-bot --only-tap-syntax
+  formulae:
+    name: build-bottle
+    needs: syntax
+    if: |
+      github.event_name == 'pull_request'
+      && github.event.pull_request.draft == false
+    timeout-minutes: 30
+    runs-on: macos-26
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_INSTALL_CLEANUP: 1
+      RUSTC_WRAPPER: sccache
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_CACHE_SIZE: 2G
+      CARGO_HOME: ${{ github.workspace }}/.cargo
+    steps:
+      - name: Set up Homebrew
+        id: set-up-homebrew
+        uses: Homebrew/actions/setup-homebrew@c69e528904c52915e7f40e120fc7d49773bbb2a0  # main
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install sccache
+        run: brew install sccache
+      - name: Cache Homebrew Bundler RubyGems
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ steps.set-up-homebrew.outputs.gems-path }}
+          key: macos-26-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
+          restore-keys: macos-26-rubygems-
+      - name: Cache Homebrew downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/Library/Caches/Homebrew/downloads
+            ~/Library/Caches/Homebrew/api
+          key: macos-26-brew-${{ hashFiles('Formula/*.rb') }}
+          restore-keys: macos-26-brew-
+      - name: Cache Cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ${{ github.workspace }}/.cargo/registry
+            ${{ github.workspace }}/.cargo/git
+          key: macos-26-cargo-${{ github.run_id }}
+          restore-keys: macos-26-cargo-
+      - name: Cache sccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.sccache
+          key: macos-26-sccache-${{ github.run_id }}
+          restore-keys: macos-26-sccache-
+      - run: brew test-bot --only-cleanup-before
+      - run: brew test-bot --only-setup
+      - run: brew test-bot --only-formulae
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+      - name: Upload bottles as artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: bottles_macos-26
+          path: "*.bottle.*"
+  cask-audit:
+    name: cask-audit
+    needs: syntax
+    if: |
+      github.event_name == 'pull_request'
+      && github.event.pull_request.draft == false
+    timeout-minutes: 15
+    # macOS is REQUIRED: brew audit skips the cask auditor on Linux
+    # (`next [] if os == :linux` in dev-cmd/audit.rb), so the syntax job above
+    # — pinned to Ubuntu — only runs cask *style*, not the cask auditor. This
+    # job provides the actual cask audit coverage.
+    runs-on: macos-latest
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Set up Homebrew
+        id: set-up-homebrew
+        uses: Homebrew/actions/setup-homebrew@c69e528904c52915e7f40e120fc7d49773bbb2a0  # main
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Audit casks
+        run: |
+          repository="${GITHUB_REPOSITORY#*/}"
+          tap="${GITHUB_REPOSITORY_OWNER}/${repository#homebrew-}"
+          shopt -s nullglob
+          rc=0
+          for f in "$(brew --repository "$tap")"/Casks/*.rb; do
+            cask=$(basename "$f" .rb)
+            echo "::group::audit $cask"
+            # Offline (no --online): a bootstrap cask points at an artifact that
+            # doesn't exist until the producer's first real release, so --online
+            # can't pass here. The online audit runs at bump time (dispatch/cron)
+            # against the published artifact instead.
+            brew audit --cask --strict "$tap/$cask" || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
