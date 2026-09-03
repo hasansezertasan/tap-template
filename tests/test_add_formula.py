@@ -47,17 +47,36 @@ class LicenseTest(unittest.TestCase):
 
 
 class DescTest(unittest.TestCase):
+    """`brew audit --strict` wants no leading article and a capital first letter.
+
+    Both rules live in Homebrew's ``rubocops/shared/desc_helper.rb``; the article
+    check there is case-insensitive, so this helper's must be too.
+    """
+
     def test_strips_article_and_period(self) -> None:
-        self.assertEqual(af.clean_desc("A neat tool."), "neat tool")
+        self.assertEqual(af.clean_desc("A neat tool."), "Neat tool")
 
     def test_strips_lowercase_article(self) -> None:
-        """`brew audit --strict` rejects a leading article in either case."""
-        self.assertEqual(af.clean_desc("a tool for things."), "tool for things")
-        self.assertEqual(af.clean_desc("the widget"), "widget")
+        self.assertEqual(af.clean_desc("a tool for things."), "Tool for things")
+        self.assertEqual(af.clean_desc("the widget"), "Widget")
+
+    def test_capitalizes_a_lowercase_summary(self) -> None:
+        self.assertEqual(af.clean_desc("generic CLI"), "Generic CLI")
 
     def test_leaves_body_untouched(self) -> None:
-        self.assertEqual(af.clean_desc("generic CLI"), "generic CLI")
         self.assertEqual(af.clean_desc("Android build helper"), "Android build helper")
+        self.assertEqual(af.clean_desc(""), "")
+
+
+class ClassNameTest(unittest.TestCase):
+    def test_derives_from_hyphenated_name(self) -> None:
+        self.assertEqual(af.class_name("markdown-it-py"), "MarkdownItPy")
+
+    def test_rejects_a_leading_digit(self) -> None:
+        """`class 2to3 < Formula` is a Ruby syntax error, so refuse to write it."""
+        with self.assertRaises(ValueError) as caught:
+            af.class_name("2to3")
+        self.assertIn("2to3", str(caught.exception))
 
 
 class PythonSeriesTest(unittest.TestCase):

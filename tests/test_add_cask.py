@@ -89,15 +89,71 @@ class RbStrTest(unittest.TestCase):
 
 
 class StanzaTest(unittest.TestCase):
-    def test_pkg_stanza_no_hint(self) -> None:
-        line, hint = ac.stanza_for("x.pkg", "x.pkg", "tok")
-        self.assertEqual(line, '  pkg "x.pkg"')
-        self.assertEqual(hint, "")
+    def test_pkg_stanza_carries_its_uninstall(self) -> None:
+        # Was asserted to emit a bare `pkg` stanza with no hint, which
+        # `brew audit --cask --strict` rejects. See PkgStanzaTest below.
+        stanza, hint = ac.stanza_for("x.pkg", "x.pkg", "tok", "com.example.x")
+        self.assertEqual(
+            stanza,
+            '  pkg "x.pkg"\n\n  uninstall pkgutil: "com.example.x"',
+        )
+        self.assertTrue(hint)
 
     def test_dmg_stanza_guesses_app_with_hint(self) -> None:
         line, hint = ac.stanza_for("x.dmg", "x.dmg", "tok")
         self.assertEqual(line, '  app "tok.app"')
         self.assertTrue(hint)
+
+
+
+class VersionFromTagTest(unittest.TestCase):
+    def test_strips_a_v_prefix(self) -> None:
+        self.assertEqual(ac.version_from_tag("v1.2.3"), "1.2.3")
+
+    def test_strips_a_word_prefix(self) -> None:
+        """A non-`v` prefix must stay outside the version, or the bump 404s.
+
+        Taking the whole tag as the version left it hard-coded in the asset
+        filename, so the next bump rewrote the tag in the URL while still asking
+        for the previous file.
+        """
+        self.assertEqual(ac.version_from_tag("release-1.2.3"), "1.2.3")
+        self.assertEqual(ac.version_from_tag("app/2024.01.15"), "2024.01.15")
+
+    def test_keeps_a_bare_version(self) -> None:
+        self.assertEqual(ac.version_from_tag("1.2.3"), "1.2.3")
+
+    def test_keeps_a_prerelease_suffix(self) -> None:
+        self.assertEqual(ac.version_from_tag("v10.0.0-beta.1"), "10.0.0-beta.1")
+
+    def test_returns_a_digitless_tag_unchanged(self) -> None:
+        self.assertEqual(ac.version_from_tag("nightly"), "nightly")
+
+    def test_prefix_survives_templating(self) -> None:
+        version = ac.version_from_tag("release-1.2.3")
+        self.assertEqual(ac.templatize("release-1.2.3", version),
+                         "release-#{version}")
+        self.assertEqual(ac.templatize("App-1.2.3.dmg", version),
+                         "App-#{version}.dmg")
+
+
+class PkgStanzaTest(unittest.TestCase):
+    def test_pkg_emits_an_uninstall_stanza(self) -> None:
+        """`brew audit --cask --strict`: pkg stanzas require an uninstall stanza."""
+        stanza, _ = ac.stanza_for("App-#{version}.pkg", "App-1.2.3.pkg", "app",
+                                  "com.example.app")
+        self.assertIn('pkg "App-#{version}.pkg"', stanza)
+        self.assertIn('uninstall pkgutil: "com.example.app"', stanza)
+
+    def test_pkg_without_an_id_is_refused(self) -> None:
+        with self.assertRaises(SystemExit) as caught:
+            ac.stanza_for("App-#{version}.pkg", "App-1.2.3.pkg", "app", None)
+        self.assertIn("--pkg-id", str(caught.exception))
+
+    def test_app_bundle_needs_no_pkg_id(self) -> None:
+        stanza, hint = ac.stanza_for("App-#{version}.dmg", "App-1.2.3.dmg", "app")
+        self.assertEqual(stanza, '  app "app.app"')
+        self.assertIn("guess", hint)
 
 
 if __name__ == "__main__":

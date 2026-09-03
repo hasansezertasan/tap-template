@@ -64,8 +64,23 @@ def normalize(name: str) -> str:
 
 
 def class_name(name: str) -> str:
-    """Derive a Ruby class name from a package name (e.g. ``markdown-it-py``)."""
-    return "".join(part.capitalize() for part in re.split(r"[-_.]+", name))
+    """Derive a Ruby class name from a package name (e.g. ``markdown-it-py``).
+
+    Raises ``ValueError`` for a name that cannot produce a valid Ruby constant.
+    PyPI allows a leading digit, but ``class 2to3 < Formula`` is a Ruby syntax
+    error, so emitting it would write a file that cannot even be parsed. Homebrew's
+    own ``Formulary.class_s`` has the same gap (``brew create 2to3`` generates the
+    same broken class), so there is no upstream convention to follow — fail loudly
+    instead of writing a broken formula.
+    """
+    derived = "".join(part.capitalize() for part in re.split(r"[-_.]+", name))
+    if not re.fullmatch(r"[A-Z][A-Za-z0-9_]*", derived):
+        raise ValueError(
+            f"cannot derive a valid Ruby class name from {name!r} (got "
+            f"{derived!r}); Homebrew formula classes must start with a letter. "
+            "Write this formula by hand with an explicit class name."
+        )
+    return derived
 
 
 def spdx_license(info: dict) -> str:
@@ -86,18 +101,31 @@ def spdx_license(info: dict) -> str:
 
 
 def clean_desc(summary: str) -> str:
-    """Format a PyPI summary as a Homebrew ``desc`` (no leading article, no period)."""
-    desc = summary.strip().rstrip(".")
-    # Case-insensitive: a lowercase "a "/"the " prefix is just as much a leading
-    # article, and `brew audit --strict` rejects it either way.
-    return re.sub(r"^(?:an?|the)\s+", "", desc, flags=re.IGNORECASE)
+    """Format a PyPI summary as a Homebrew ``desc``.
+
+    ``brew audit --strict`` rejects a leading article and requires a capital first
+    letter (both in ``rubocops/shared/desc_helper.rb``), so strip the article and a
+    trailing period, then capitalize. The article match is case-insensitive because
+    the audit's own regex is. Mirrors the helper in ``add_cask.py``.
+    """
+    desc = re.sub(r"^(?:an?|the)\s+", "", summary.strip().rstrip("."),
+                  flags=re.IGNORECASE)
+    return desc[:1].upper() + desc[1:] if desc else desc
 
 
 def min_python(requires_python: str | None) -> str | None:
-    """Extract the minimum ``3.x`` series from a ``requires_python`` spec."""
+    """Extract the minimum ``3.x`` series from a ``requires_python`` spec.
+
+    Covers the lower-bound operators that appear in practice: ``>``/``>=`` plus the
+    exact (``==3.12``, ``==3.12.*``) and compatible-release (``~=3.12``) forms,
+    which pin a floor just as firmly. This is a pragmatic scan, not a PEP 440
+    solver — these scripts are stdlib-only, so ``packaging`` is not available.
+    ``!=`` exclusions are deliberately ignored: they carve holes out of a range
+    rather than setting a floor.
+    """
     if not requires_python:
         return None
-    matches = re.findall(r">=?\s*3\.(\d+)", requires_python)
+    matches = re.findall(r"(?:>=?|==|~=)\s*3\.(\d+)", requires_python)
     if not matches:
         return None
     return f"3.{min(int(m) for m in matches)}"
@@ -116,6 +144,14 @@ def max_python(requires_python: str | None) -> str | None:
     for op, minor in re.findall(r"(<=?)\s*3\.(\d+)", requires_python):
         allowed = int(minor) if op == "<=" else int(minor) - 1
         cap = allowed if cap is None else min(cap, allowed)
+    # An exact pin caps as hard as a `<` clause: `==3.12` and `==3.12.*` both
+    # exclude 3.13. So does a compatible release pinned past the minor
+    # (`~=3.12.1` means `>=3.12.1, ==3.12.*`), while a bare `~=3.12` allows any
+    # later 3.x and must not cap.
+    for minor in re.findall(r"==\s*3\.(\d+)", requires_python):
+        cap = int(minor) if cap is None else min(cap, int(minor))
+    for minor in re.findall(r"~=\s*3\.(\d+)\.\d", requires_python):
+        cap = int(minor) if cap is None else min(cap, int(minor))
     return f"3.{cap}" if cap is not None else None
 
 
@@ -127,8 +163,13 @@ def _series_tuple(series: str) -> tuple[int, ...]:
 def brew_python(series: str) -> tuple[str, str]:
     """Return the ``python@3.x`` formula name and its interpreter path.
 
-    Falls back to the running interpreter if the brew formula is not installed,
-    which is enough for ``pip --dry-run`` marker evaluation.
+    Exits when the formula is not installed rather than falling back to the
+    interpreter running this script. pip evaluates environment markers and picks
+    compatible releases for *the interpreter it runs under*, so resolving a
+    3.14-targeted formula from 3.12 silently produces the wrong resource tree —
+    the generated formula would declare ``python@3.14`` and pin dependencies
+    resolved for 3.12. That is worse than not scaffolding at all, because the
+    mismatch is invisible in the output.
     """
     formula = f"python@{series}"
     try:
@@ -139,11 +180,15 @@ def brew_python(series: str) -> tuple[str, str]:
         interpreter = Path(prefix) / "libexec" / "bin" / "python"
         if interpreter.exists():
             return formula, str(interpreter)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-    print(f"warning: {formula} not found via brew; using {sys.executable} for "
-          "dependency resolution", file=sys.stderr)
-    return formula, sys.executable
+        detail = f"{formula} is known to brew but {interpreter} is missing"
+    except subprocess.CalledProcessError:
+        detail = f"brew does not know {formula}"
+    except FileNotFoundError:
+        detail = "brew is not installed"
+    sys.exit(f"error: cannot resolve dependencies for {formula} ({detail}).\n"
+             f"       Install it first:  brew install {formula}\n"
+             "       Resolution must run under the same interpreter the formula "
+             "declares, or the pinned resource tree will not match it.")
 
 
 def resolve_tree(interpreter: str, requirement: str) -> list[tuple[str, str]]:
@@ -265,7 +310,15 @@ def run_checks(repo: Path, name: str, tap: str) -> None:
     if not tap_formula.parent.is_dir():
         sys.exit(f"error: tap '{tap}' is not tapped at {tap_formula.parent}; run "
                  f"`brew tap {tap} {repo}` first")
-    shutil.copy(repo / "Formula" / f"{name}.rb", tap_formula)
+    source = repo / "Formula" / f"{name}.rb"
+    # A contributor working directly inside Homebrew's Library/Taps checkout is
+    # already editing the file brew reads: staging it would be shutil.copy onto
+    # itself (SameFileError), and the cleanup below would delete their work.
+    staged = source.resolve() != tap_formula.resolve()
+    if staged:
+        shutil.copy(source, tap_formula)
+    else:
+        print(f"==> {source} is already the active tap's copy; auditing in place")
     ref = f"{tap}/{name}"
     try:
         for cmd in (
@@ -276,7 +329,8 @@ def run_checks(repo: Path, name: str, tap: str) -> None:
             print(f"\n==> {' '.join(cmd)}")
             subprocess.run(cmd, check=True)
     finally:
-        tap_formula.unlink(missing_ok=True)
+        if staged:
+            tap_formula.unlink(missing_ok=True)
 
 
 def main() -> None:

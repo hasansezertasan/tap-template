@@ -50,7 +50,11 @@ livecheck, and picks `python@3.x`. Then verify the touch-ups it **can't** infer:
   `--test-command '#{bin}/<name> version'` when it differs. A package that ships no
   executable needs the assertion replaced with a real smoke test.
 - **Python version** — only override with `--python python@3.13` if a dep lacks wheels
-  for the default.
+  for the default. Whichever series is selected must be installed; the script stops
+  rather than resolving the tree under the wrong interpreter.
+- **A package whose name starts with a digit** (`2to3`) cannot be scaffolded: the
+  Ruby class name would be invalid. Write that formula by hand with an explicit
+  class name.
 
 Audit: `brew audit --strict --online <name>` (use the **name**, not the file path).
 
@@ -69,6 +73,10 @@ producer's first release. Then verify the touch-ups:
 
 - **`app "<name>.app"`** — the `.app` name inside a `.dmg` or `.zip` is a *guess*; verify
   the real bundle name.
+- **`.pkg` assets need `--pkg-id`** — a `pkg` stanza without `uninstall pkgutil:` is
+  rejected by `brew audit --cask --strict`, and Homebrew cannot remove the payload
+  without it. The script refuses to guess and prints how to read the identifier
+  from the asset.
 - **`depends_on :macos`** is the default. If `brew audit --online` says the cask's macOS
   floor is higher than the bundle's `LSMinimumSystemVersion`, pin it: `depends_on macos:
   :big_sur`.

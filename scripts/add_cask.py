@@ -122,6 +122,21 @@ def sha256_of(url: str) -> str:
     return digest.hexdigest()
 
 
+def version_from_tag(tag: str) -> str:
+    """Extract the version from a release tag, keeping any prefix out of it.
+
+    A tag is usually the version with a decoration: ``v1.2.3``, ``release-1.2.3``,
+    ``app/1.2.3``. Only the numeric part belongs in the cask's ``version``, so that
+    :func:`templatize` finds it in *both* the tag and the asset filename and the
+    prefix stays literal in the URL. Taking the whole tag (the old ``v``-only
+    behaviour) left the version hard-coded in the asset name, so the next automated
+    bump rewrote the tag in the URL while still requesting the previous filename —
+    a 404. A tag with no digits has no version to extract and is returned as-is.
+    """
+    match = re.search(r"\d[\w.+-]*$", tag)
+    return match.group(0) if match else tag
+
+
 def templatize(text: str, version: str) -> str:
     """Replace literal occurrences of the version in a URL/filename with ``#{version}``.
 
@@ -157,18 +172,37 @@ def _rb_str(value: str) -> str:
 
 
 
-def stanza_for(stanza_artifact: str, artifact: str, token: str) -> tuple[str, str]:
-    """Return the artifact stanza line and a verify-hint for the given asset.
+def stanza_for(stanza_artifact: str, artifact: str, token: str,
+               pkg_id: str | None = None) -> tuple[str, str]:
+    """Return the artifact stanza(s) and a verify-hint for the given asset.
 
     ``stanza_artifact`` is the (version-templated) filename that matches the URL. A
-    ``.pkg`` installs via a ``pkg`` stanza pinned to that templated name. A
-    ``.dmg``/``.zip`` carries a ``.app`` bundle whose real name we can't know without
-    unpacking it, so we guess ``<token>.app`` and flag it for verification.
+    ``.pkg`` installs via a ``pkg`` stanza pinned to that templated name, plus an
+    ``uninstall pkgutil:`` stanza — ``brew audit --cask --strict`` rejects a pkg
+    without one ("installer and pkg stanzas require an uninstall stanza" in
+    ``cask/audit.rb``), and without it Homebrew cannot remove the payload. The
+    package id cannot be read from the asset without unpacking it, so it comes from
+    ``--pkg-id``. A ``.dmg``/``.zip`` carries a ``.app`` bundle whose real name we
+    can't know without unpacking either, so we guess ``<token>.app`` and flag it.
     """
     if artifact.endswith(".pkg"):
+        if not pkg_id:
+            sys.exit(
+                f"error: {artifact} is a .pkg, which needs an uninstall stanza; "
+                "pass --pkg-id <identifier>.\n"
+                "       Find it without installing:\n"
+                f"         pkgutil --expand-full {artifact} /tmp/pkg && \\\n"
+                "           /usr/libexec/PlistBuddy -c 'Print :pkg-info:identifier' "
+                "/tmp/pkg/*/PackageInfo\n"
+                "       Or, on a machine that has it installed:  pkgutil --pkgs"
+            )
         # stanza_artifact is already escaped and version-templated by the caller;
         # re-escaping would neutralise its #{version} marker.
-        return f'  pkg "{stanza_artifact}"', ""
+        return ("\n".join([
+            f'  pkg "{stanza_artifact}"',
+            "",
+            f'  uninstall pkgutil: "{_rb_str(pkg_id)}"',
+        ]), f"verify the package id {pkg_id!r} matches the receipt in {artifact}")
     return (f'  app "{_rb_str(token)}.app"',
             f'the .app name inside {artifact} is a guess ("{token}.app") — verify it')
 
@@ -212,6 +246,10 @@ def main() -> None:
                              ".dmg/.pkg/.zip)")
     parser.add_argument("--name",
                         help="override the cask token (default: normalized repo name)")
+    parser.add_argument("--pkg-id", metavar="ID",
+                        help="package identifier for a .pkg asset's `uninstall "
+                             "pkgutil:` stanza (required for .pkg; `brew audit "
+                             "--cask --strict` rejects a pkg without one)")
     parser.add_argument("--seed", action="store_true",
                         help="write a placeholder cask (version/sha256 filled by the "
                              "first `brew bump-cask-pr`) without downloading anything")
@@ -255,7 +293,7 @@ def main() -> None:
                          "a placeholder for the first release to fill in")
             raise
         tag = release["tag_name"]
-        version = tag[1:] if re.fullmatch(r"v\d.*", tag) else tag
+        version = version_from_tag(tag)
         asset = select_asset(release.get("assets", []), args.artifact)
         artifact = asset["name"]
         sha = sha256_of(asset["browser_download_url"])
@@ -269,7 +307,7 @@ def main() -> None:
                         f"/releases/download/{templatize(_rb_str(tag), version)}"
                         f"/{stanza_artifact}")
 
-    stanza, hint = stanza_for(stanza_artifact, artifact, token)
+    stanza, hint = stanza_for(stanza_artifact, artifact, token, args.pkg_id)
 
     repo_root = Path(__file__).resolve().parent.parent
     out = repo_root / "Casks" / f"{token}.rb"

@@ -53,7 +53,10 @@ convention. Ask for "add \<package\> as a formula" or run `/homebrew-add`.
 
 The formula scaffolder reads PyPI metadata, selects a compatible Homebrew Python,
 resolves the dependency tree, pins source distributions and checksums, and emits
-`Formula/<name>.rb`.
+`Formula/<name>.rb`. The selected `python@3.x` must be installed
+(`brew install python@3.13`): pip evaluates markers and picks compatible releases
+for the interpreter it runs under, so resolving with a different one produces a
+resource tree that silently does not match the formula's declared Python.
 
 ```sh
 mise run add-formula <package>
@@ -83,12 +86,16 @@ The cask scaffolder reads the latest GitHub release, selects a `.dmg`, `.pkg`, o
 ```sh
 GITHUB_TOKEN="$(gh auth token)" mise run add-cask owner/repository
 python3 scripts/add_cask.py owner/repository --artifact App-arm64.dmg
+python3 scripts/add_cask.py owner/repository --artifact App.pkg --pkg-id com.example.app
 python3 scripts/add_cask.py owner/repository --seed
 ```
 
-For `.dmg` and `.zip` assets, verify the generated `.app` bundle name. Seed mode
-uses placeholder release conventions and must be checked against the first real
-release.
+For `.dmg` and `.zip` assets, verify the generated `.app` bundle name. A `.pkg`
+asset needs `--pkg-id`: Homebrew cannot uninstall an installer payload without an
+`uninstall pkgutil:` stanza, and `brew audit --cask --strict` rejects a `pkg`
+stanza that has none. The scaffolder prints how to read the identifier out of the
+asset. Seed mode uses placeholder release conventions and must be checked against
+the first real release.
 
 ## Validate changes
 
