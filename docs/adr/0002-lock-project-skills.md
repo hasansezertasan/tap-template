@@ -32,14 +32,34 @@ normally; only the mirrored, lockfile-derived skills are ignored.
   ignored generated symlinks, so adding a first-party skill means adding a
   negation line to `.gitignore`.
 * Bad, because the lockfile records a `computedHash` but nothing enforces it.
-  The Skills CLI has no flag for pinning a source to an immutable commit
-  (`skills add` takes no `--ref`, `--tag`, or `--commit`), and
-  `experimental_install` restores from the mutable `source` rather than
-  verifying the recorded hash. A restore therefore fetches whatever the upstream
-  default branch holds at that moment. Review a restored skill before trusting
-  it, and treat a `computedHash` change in a lockfile diff as a real review
-  item. Enforcement has to come from the CLI; it cannot be added here without
-  hand-editing a generated file the CLI would overwrite.
+  A restore fetches whatever the upstream default branch holds at that moment.
+  This is an accepted risk, not an oversight — the two mitigations a reviewer
+  would reach for were both investigated and neither is available:
+
+  * **Pinning to an immutable commit.** The Skills CLI has no flag for it:
+    `skills add` takes no `--ref`, `--tag`, or `--commit`. A `ref` field added
+    to the lockfile by hand would be ignored and overwritten on the next
+    `skills add` or `skills update`.
+  * **Failing a restore when content differs from `computedHash`.** The
+    algorithm is reproducible — `computeSkillFolderHash` in the CLI is a sha256
+    over the skill folder, files sorted by relative path, updating the hash with
+    each relative path then its bytes — but it cannot be checked against an
+    installed tree. The CLI writes per-agent plumbing (an `agents/*.yaml`) into
+    the skill folder *after* hashing, so the folder no longer hashes to the
+    recorded value. Reproducing this repository's two entries confirms it: the
+    single-file skill matches its recorded hash exactly, the one with generated
+    agent config does not.
+
+  What keeps this tolerable is scope: these skills are maintainer tooling for
+  writing the records in `docs/`. Nothing in the tap's install path, its
+  scaffolders, or its CI loads them. Review a restored skill before trusting it,
+  and treat a `computedHash` change in a lockfile diff as a real review item —
+  the hash is still a useful change *detector* even though it is not an
+  enforced *gate*.
+
+  Vendoring the skills instead would close this completely, at the cost this
+  record was written to avoid. If the balance ever shifts, supersede this
+  decision rather than amending it.
 
 ## Related Research
 
