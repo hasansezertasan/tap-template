@@ -13,7 +13,8 @@ permissions: {}
 # }
 jobs:
   update:
-    timeout-minutes: 20
+    # Builds the bumped formula from source now, not just audits it.
+    timeout-minutes: 60
     name: Update formula (dispatch)
     # macOS runner: brew update-python-resources re-resolves the tree on the
     # host platform, so a macOS-only formula (depends_on :macos)
@@ -111,7 +112,16 @@ jobs:
           # style and metadata, not the resolved dependency tree, so it cannot
           # catch stale pins and an unverified bump must not reach a PR.
           if grep -q "virtualenv_install_with_resources" "Formula/${FORMULA}.rb"; then
-            brew update-python-resources "$ref"
+            # Recover the extras the formula was scaffolded with. Homebrew infers
+            # the package name from the stable URL, which carries no extras, so a
+            # bare re-resolve drops every extras-only resource.
+            extras=$(sed -n 's/^[[:space:]]*# homebrew-tap:extras=//p' \
+              "Formula/${FORMULA}.rb" | head -1)
+            if [ -n "$extras" ]; then
+              brew update-python-resources --package-name="${FORMULA}[${extras}]" "$ref"
+            else
+              brew update-python-resources "$ref"
+            fi
           else
             echo "$FORMULA has no virtualenv resources; skipping update-python-resources"
           fi
@@ -121,6 +131,13 @@ jobs:
           # creates it (mirrors update-cask-dispatch.yml). A failure fails the
           # job, so no unverified PR is opened.
           brew audit --strict --online "$ref"
+
+          # `brew audit` is static: it never compiles a resource. Build and test
+          # the bump so a dependency that fails to build cannot reach a PR
+          # looking verified. A failure here fails the job, so no PR is opened.
+          brew install --build-from-source "$ref"
+          brew test "$ref"
+          brew uninstall --force "$ref" || true
       - name: Create Pull Request
         if: steps.check.outputs.has_update == 'true'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
@@ -133,6 +150,12 @@ jobs:
 
             - **Formula**: ${{ env.FORMULA }}
             - **Version**: ${{ steps.check.outputs.version }}
+
+            Audited, built from source, and tested in the workflow run that
+            opened this PR. Bottles are **not** built here: a PR opened with
+            `GITHUB_TOKEN` does not trigger `tests.yml`. Close and reopen this PR
+            (or push to its branch) to run the bottle build before applying the
+            `pr-pull` label.
 
             ---
             *Triggered by repository_dispatch from package repo.*

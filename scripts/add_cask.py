@@ -172,6 +172,27 @@ def _rb_str(value: str) -> str:
 
 
 
+def arch_for(artifact: str) -> str | None:
+    """Return the cask ``arch`` symbol implied by an asset filename, if any.
+
+    A release that ships one architecture-specific build (``App-arm64.dmg``) would
+    otherwise get a cask constrained only to macOS, so Homebrew would happily
+    install it on the other architecture. The returned symbol is one of
+    ``VALID_ARCHES`` in Homebrew's ``cask/dsl/depends_on.rb``; ``None`` means the
+    name carries no architecture marker and the cask stays unconstrained (a
+    universal build, or one this cannot tell apart).
+    """
+    lowered = artifact.lower()
+    markers = {
+        "arm64": ("arm64", "aarch64", "apple-silicon", "applesilicon"),
+        "x86_64": ("x86_64", "x86-64", "amd64", "intel"),
+    }
+    found = {arch for arch, needles in markers.items()
+             if any(needle in lowered for needle in needles)}
+    # A name mentioning both (a universal artifact) constrains nothing.
+    return found.pop() if len(found) == 1 else None
+
+
 def stanza_for(stanza_artifact: str, artifact: str, token: str,
                pkg_id: str | None = None) -> tuple[str, str]:
     """Return the artifact stanza(s) and a verify-hint for the given asset.
@@ -208,9 +229,11 @@ def stanza_for(stanza_artifact: str, artifact: str, token: str,
 
 
 def render(token: str, repo: str, version: str, sha: str,
-           url_template: str, desc: str, homepage: str, stanza: str) -> str:
+           url_template: str, desc: str, homepage: str, stanza: str,
+           arch: str | None = None) -> str:
     """Render the Ruby cask source."""
-    return "\n".join([
+    arch_lines = [f"  depends_on arch: :{arch}", ""] if arch else []
+    return "\n".join([*[
         f'cask "{_rb_str(token)}" do',
         f'  version "{_rb_str(version)}"',
         f'  sha256 "{_rb_str(sha)}"',
@@ -232,10 +255,11 @@ def render(token: str, repo: str, version: str, sha: str,
         "  # explicitly to match, e.g. `depends_on macos: :big_sur`.",
         "  depends_on :macos",
         "",
+    ], *arch_lines, *[
         stanza,
         "end",
         "",
-    ])
+    ]])
 
 
 def main() -> None:
@@ -261,6 +285,13 @@ def main() -> None:
     # pathlib's `/` discard the Casks/ prefix and write outside the tap.
     if "/" in token or "\\" in token:
         sys.exit(f"error: --name {args.name!r} must not contain path separators")
+    # Same grammar update-cask-dispatch.yml validates its payload against. A token
+    # outside it (`My App`, `@app`, `_`) survives normalize but yields a cask that
+    # Homebrew cannot load and that the dispatch updater would refuse to bump, so
+    # reject it here rather than writing the file.
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", token):
+        sys.exit(f"error: cask token {token!r} (from {args.name or repo!r}) must "
+                 "match ^[a-z0-9][a-z0-9-]*$; pass a valid --name")
     try:
         meta = fetch_json(f"{GITHUB_API}/repos/{owner}/{repo}")
     except urllib.error.HTTPError as exc:
@@ -303,17 +334,21 @@ def main() -> None:
         # Escape before templatize (see _rb_str): the tag and asset name are
         # upstream-controlled, but the #{version} marker added here must stay live.
         stanza_artifact = templatize(_rb_str(artifact), version)
-        url_template = (f"https://github.com/{_rb_str(owner)}/{_rb_str(repo)}"
-                        f"/releases/download/{templatize(_rb_str(tag), version)}"
-                        f"/{stanza_artifact}")
+        # Template the URL the API gave us rather than rebuilding one from the raw
+        # tag and filename. It is already percent-encoded, so an asset name with a
+        # space or a `#` (or a tag containing `/`) stays byte-identical to the URL
+        # the checksum above was computed from. A version is digits and dots, so it
+        # is never encoded and templatize still finds it.
+        url_template = templatize(_rb_str(asset["browser_download_url"]), version)
 
     stanza, hint = stanza_for(stanza_artifact, artifact, token, args.pkg_id)
+    arch = arch_for(artifact)
 
     repo_root = Path(__file__).resolve().parent.parent
     out = repo_root / "Casks" / f"{token}.rb"
     out.parent.mkdir(exist_ok=True)
     out.write_text(render(token, repo, version, sha, url_template, desc,
-                          homepage, stanza))
+                          homepage, stanza, arch))
     print(f"==> Wrote {out.relative_to(repo_root)} (version {version})")
     if hint:
         print(f"warning: {hint}", file=sys.stderr)

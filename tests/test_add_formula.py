@@ -141,5 +141,60 @@ class TestCommandTest(unittest.TestCase):
         self.assertNotIn("--version", rendered)
 
 
+
+class SpdxTest(unittest.TestCase):
+    """A raw PyPI `license` field is free text, not an SPDX identifier."""
+
+    def test_accepts_plain_and_compound_identifiers(self) -> None:
+        for value in ("MIT", "Apache-2.0", "GPL-2.0-or-later",
+                      "MIT OR Apache-2.0", "Apache-2.0 WITH LLVM-exception"):
+            self.assertTrue(af.is_spdx_expression(value), value)
+
+    def test_rejects_legacy_free_text(self) -> None:
+        # These are the common PyPI values; emitting them verbatim produced a
+        # formula that failed `brew audit --strict` with no warning.
+        for value in ("MIT License", "BSD License", "UNKNOWN", "Proprietary",
+                      "MIT AND", "", "Free for non-commercial use"):
+            self.assertFalse(af.is_spdx_expression(value), value)
+
+    def test_unrecognized_license_falls_back_to_the_todo_marker(self) -> None:
+        info = {"classifiers": [], "license": "BSD License"}
+        self.assertEqual(af.spdx_license(info), "TODO-set-SPDX-license")
+
+    def test_classifier_still_wins(self) -> None:
+        info = {"classifiers": ["License :: OSI Approved :: MIT License"],
+                "license": "whatever"}
+        self.assertEqual(af.spdx_license(info), "MIT")
+
+
+class WheelTest(unittest.TestCase):
+    def test_pure_python_wheels(self) -> None:
+        for name in ("pkg-1.0-py3-none-any.whl", "pkg-1.0-py2.py3-none-any.whl"):
+            self.assertTrue(af._is_pure_python_wheel(name), name)
+
+    def test_platform_and_abi_wheels_are_not_pure(self) -> None:
+        """Pinning one of these ties the formula to one arch and interpreter."""
+        for name in ("pkg-1.0-cp312-cp312-macosx_11_0_arm64.whl",
+                     "pkg-1.0-cp39-abi3-manylinux_x86_64.whl",
+                     "pkg-1.0-cp312-cp312-win_amd64.whl"):
+            self.assertFalse(af._is_pure_python_wheel(name), name)
+
+
+class ExtrasMarkerTest(unittest.TestCase):
+    _INFO = {"summary": "Tool", "project_urls": {}, "home_page": "",
+             "license": "MIT", "classifiers": []}
+
+    def _render(self, extras: str) -> str:
+        return af.render("foo", self._INFO, "https://e/x.tar.gz", "abc",
+                         "python@3.14", [], [], None, extras)
+
+    def test_extras_are_recorded_for_the_updaters(self) -> None:
+        """Bumps re-resolve from the stable URL, which carries no extras."""
+        self.assertIn(f"{af.EXTRAS_MARKER}tui,web", self._render("tui,web"))
+
+    def test_no_marker_without_extras(self) -> None:
+        self.assertNotIn(af.EXTRAS_MARKER, self._render(""))
+
+
 if __name__ == "__main__":
     unittest.main()

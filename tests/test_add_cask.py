@@ -156,5 +156,41 @@ class PkgStanzaTest(unittest.TestCase):
         self.assertIn("guess", hint)
 
 
+
+class ArchTest(unittest.TestCase):
+    def test_detects_a_single_architecture(self) -> None:
+        self.assertEqual(ac.arch_for("App-arm64.dmg"), "arm64")
+        self.assertEqual(ac.arch_for("App-aarch64.zip"), "arm64")
+        self.assertEqual(ac.arch_for("App-x86_64.pkg"), "x86_64")
+        self.assertEqual(ac.arch_for("App-amd64.dmg"), "x86_64")
+
+    def test_universal_and_unmarked_assets_are_unconstrained(self) -> None:
+        self.assertIsNone(ac.arch_for("App.dmg"))
+        self.assertIsNone(ac.arch_for("App-universal.dmg"))
+        # Naming both is a universal build, not a contradiction to guess at.
+        self.assertIsNone(ac.arch_for("App-intel-arm64.dmg"))
+
+    def test_arch_reaches_the_rendered_cask(self) -> None:
+        cask = ac.render("tok", "Repo", "1.0", "sha", "https://u", "Desc",
+                         "https://h", '  app "T.app"', "arm64")
+        self.assertIn("  depends_on arch: :arm64", cask)
+
+    def test_no_arch_stanza_when_unconstrained(self) -> None:
+        cask = ac.render("tok", "Repo", "1.0", "sha", "https://u", "Desc",
+                         "https://h", '  app "T.app"', None)
+        self.assertNotIn("depends_on arch:", cask)
+
+
+class EncodedUrlTest(unittest.TestCase):
+    def test_percent_encoding_survives_templating(self) -> None:
+        """The API URL is used as-is so it matches the checksummed download."""
+        url = "https://github.com/o/r/releases/download/v1.2.3/My%20App-1.2.3.dmg"
+        self.assertEqual(
+            ac.templatize(url, "1.2.3"),
+            "https://github.com/o/r/releases/download/v#{version}/"
+            "My%20App-#{version}.dmg",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

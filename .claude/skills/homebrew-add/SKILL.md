@@ -44,6 +44,10 @@ livecheck, and picks `python@3.x`. Then verify the touch-ups it **can't** infer:
 
 - **System (non-Python) libraries** → add `depends_on` by hand (e.g. PyYAML needs
   `depends_on "libyaml"`). Rust for `pydantic-core` is auto-added.
+- **`license "TODO-set-SPDX-license"`** → PyPI gave a non-SPDX value (`MIT License`,
+  `UNKNOWN`). Set the real SPDX identifier; `brew audit --strict` rejects the marker.
+- **`--extras`** is recorded as a `# homebrew-tap:extras=` comment that the update
+  workflows read. Keep it: without it the first bump drops extras-only resources.
 - **Test command** — the generated `test do` assumes `<name> --version`. PyPI does
   not expose console scripts, so that is a guess: check the CLI (some use `version`
   with no dashes, or another subcommand) and pass
@@ -80,6 +84,8 @@ producer's first release. Then verify the touch-ups:
 - **`depends_on :macos`** is the default. If `brew audit --online` says the cask's macOS
   floor is higher than the bundle's `LSMinimumSystemVersion`, pin it: `depends_on macos:
   :big_sur`.
+- **`depends_on arch:`** is added when the asset name marks one architecture. Check
+  it against what upstream actually ships — a universal build gets no stanza.
 - **`caveats`** — add them if the app needs permissions or Gatekeeper approval.
 
 Audit: `brew audit --cask --strict --online <owner>/<tap>/<name>`.

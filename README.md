@@ -58,6 +58,15 @@ resolves the dependency tree, pins source distributions and checksums, and emits
 for the interpreter it runs under, so resolving with a different one produces a
 resource tree that silently does not match the formula's declared Python.
 
+A package or dependency that publishes neither an sdist nor a pure-Python wheel
+is refused rather than pinned to a platform wheel that cannot build everywhere.
+A PyPI `license` value that is not an SPDX expression (`MIT License`, `UNKNOWN`)
+leaves the `TODO-set-SPDX-license` marker with a warning instead of being emitted
+as if it were one. `--extras` is recorded in the formula as a
+`# homebrew-tap:extras=` comment, which both update workflows read and pass to
+`brew update-python-resources --package-name`; without it the first version bump
+would re-resolve the base requirement and drop every extras-only resource.
+
 ```sh
 mise run add-formula <package>
 mise run add-formula <package> --extras tui
@@ -90,8 +99,12 @@ python3 scripts/add_cask.py owner/repository --artifact App.pkg --pkg-id com.exa
 python3 scripts/add_cask.py owner/repository --seed
 ```
 
-For `.dmg` and `.zip` assets, verify the generated `.app` bundle name. A `.pkg`
-asset needs `--pkg-id`: Homebrew cannot uninstall an installer payload without an
+For `.dmg` and `.zip` assets, verify the generated `.app` bundle name. An asset
+named for one architecture (`App-arm64.dmg`) also gets a matching
+`depends_on arch:` stanza, so Homebrew will not install it on the other one. The
+cask URL is the one GitHub's API reported, kept percent-encoded, so an asset name
+containing a space resolves to the same file the checksum was taken from. A
+`.pkg` asset needs `--pkg-id`: Homebrew cannot uninstall an installer payload without an
 `uninstall pkgutil:` stanza, and `brew audit --cask --strict` rejects a `pkg`
 stanza that has none. The scaffolder prints how to read the identifier out of the
 asset. Seed mode uses placeholder release conventions and must be checked against
@@ -119,7 +132,12 @@ from source, and run `brew test`. For a cask, run
 ## Automated updates
 
 Two weekly workflows use `brew livecheck` to find and propose formula and cask
-updates. Two `repository_dispatch` workflows let a package repository request an
+updates. A formula bump is audited, built from source, and tested inside the run
+that opens the pull request, because a pull request opened with `GITHUB_TOKEN`
+does not trigger `tests.yml` — so `brew audit` alone would let a dependency that
+fails to build reach a PR looking verified. Bottles still come from `tests.yml`:
+close and reopen an automated PR (or push to its branch) to build them before
+applying the `pr-pull` label. Two `repository_dispatch` workflows let a package repository request an
 update immediately after publishing:
 
 - `update-formula` payload: `{"formula":"name","version":"1.2.3"}`

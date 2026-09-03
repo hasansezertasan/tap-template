@@ -83,6 +83,52 @@ def class_name(name: str) -> str:
     return derived
 
 
+# SPDX identifiers this scaffolder recognises: the values of the classifier map
+# above plus the other identifiers common on PyPI. Deliberately small — Homebrew
+# validates the full SPDX list at audit time, and the point here is only to keep
+# a legacy free-text value like "MIT License" or "UNKNOWN" from being emitted as
+# if it were an identifier.
+_SPDX_IDS = frozenset(_LICENSE_BY_CLASSIFIER.values()) | {
+    "0BSD", "AGPL-3.0-only", "AGPL-3.0-or-later", "Apache-2.0", "BSD-2-Clause",
+    "BSD-3-Clause", "BSL-1.0", "CC0-1.0", "CC-BY-4.0", "CC-BY-SA-4.0",
+    "EPL-2.0", "GPL-2.0-only", "GPL-2.0-or-later", "GPL-3.0-only",
+    "GPL-3.0-or-later", "ISC", "LGPL-2.1-only", "LGPL-3.0-only",
+    "LGPL-3.0-or-later", "MIT", "MIT-0", "MPL-2.0", "PSF-2.0", "Python-2.0",
+    "Unlicense", "Zlib",
+}
+_SPDX_OPERATORS = frozenset({"AND", "OR", "WITH"})
+
+
+def is_spdx_expression(value: str) -> bool:
+    """Whether a raw license string parses as an SPDX expression we recognise.
+
+    PyPI's free-text ``license`` field is where projects put things like
+    ``MIT License``, ``BSD License``, or ``UNKNOWN``. None of those are SPDX
+    identifiers, so emitting them verbatim produces a formula that fails
+    ``brew audit --strict`` with no hint that the field needs fixing. Accept a
+    recognised identifier, optionally joined by SPDX operators (``MIT OR
+    Apache-2.0``) and optionally suffixed with ``+``, and reject anything else so
+    the caller falls back to the explicit TODO marker.
+    """
+    tokens = value.replace("(", " ").replace(")", " ").split()
+    if not tokens:
+        return False
+    for index, token in enumerate(tokens):
+        # Operators sit between identifiers, never at either end.
+        if index % 2:
+            if token.upper() not in _SPDX_OPERATORS:
+                return False
+        elif index and tokens[index - 1].upper() == "WITH":
+            # `WITH` takes a license *exception* id (`Apache-2.0 WITH
+            # LLVM-exception`), which is a separate SPDX list. Accept anything
+            # identifier-shaped and let `brew audit` validate the exact name.
+            if not re.fullmatch(r"[A-Za-z0-9.+-]+", token):
+                return False
+        elif token.rstrip("+") not in _SPDX_IDS:
+            return False
+    return len(tokens) % 2 == 1
+
+
 def spdx_license(info: dict) -> str:
     """Best-effort SPDX license, preferring the PEP 639 expression field."""
     expression = (info.get("license_expression") or "").strip()
@@ -95,8 +141,11 @@ def spdx_license(info: dict) -> str:
             if label in _LICENSE_BY_CLASSIFIER:
                 return _LICENSE_BY_CLASSIFIER[label]
     raw = (info.get("license") or "").strip()
-    if raw and len(raw) <= 40 and "\n" not in raw:
+    if raw and len(raw) <= 40 and "\n" not in raw and is_spdx_expression(raw):
         return raw
+    if raw:
+        print(f"warning: license {raw!r} is not an SPDX expression; leaving the "
+              "TODO marker for you to fill in", file=sys.stderr)
     return "TODO-set-SPDX-license"
 
 
@@ -206,19 +255,45 @@ def resolve_tree(interpreter: str, requirement: str) -> list[tuple[str, str]]:
     ]
 
 
+def _is_pure_python_wheel(filename: str) -> bool:
+    """Whether a wheel filename's compatibility tags make it platform-independent.
+
+    PEP 427 names a wheel ``{dist}-{version}(-{build})?-{python}-{abi}-{platform}``
+    so the last tag group is the platform; ``any`` with a ``none`` ABI is the
+    portable case (``py3-none-any``, ``py2.py3-none-any``).
+    """
+    parts = filename.removesuffix(".whl").split("-")
+    if len(parts) < 3:
+        return False
+    python_tag, abi_tag, platform_tag = parts[-3:]
+    return (platform_tag == "any" and abi_tag == "none"
+            and all(tag.startswith("py") for tag in python_tag.split(".")))
+
+
 def sdist_for(name: str, version: str) -> tuple[str, str, bool]:
     """Return ``(url, sha256, is_sdist)`` for a package version, preferring the sdist."""
     payload = pypi_release(name, version)
     for entry in payload["urls"]:
         if entry["packagetype"] == "sdist":
             return entry["url"], entry["digests"]["sha256"], True
-    # Wheel-only release: fall back to the first wheel so the formula still
-    # resolves. Name the file so the user can spot a platform-specific wheel
-    # (e.g. a manylinux/macOS-arm64 tag) that won't build cross-platform.
-    entry = payload["urls"][0]
-    print(f"warning: {name} {version} has no sdist; using wheel "
-          f"{entry['filename']}", file=sys.stderr)
-    return entry["url"], entry["digests"]["sha256"], False
+    # Wheel-only release. Only a pure-Python wheel is safe to pin: a platform
+    # wheel (manylinux, macOS-arm64, win_amd64) or one built for a single CPython
+    # ABI is tied to an interpreter and architecture the formula does not
+    # necessarily target, so pinning it produces a formula that fails to install
+    # or to bottle on the other architecture. Taking urls[0] picked whichever file
+    # PyPI happened to list first.
+    for entry in payload["urls"]:
+        if entry["packagetype"] == "bdist_wheel" and _is_pure_python_wheel(
+                entry["filename"]):
+            print(f"warning: {name} {version} has no sdist; using the pure-Python "
+                  f"wheel {entry['filename']}", file=sys.stderr)
+            return entry["url"], entry["digests"]["sha256"], False
+    available = ", ".join(e["filename"] for e in payload["urls"]) or "none"
+    sys.exit(f"error: {name} {version} publishes no sdist and no pure-Python "
+             f"wheel, so there is no artifact that builds for every target.\n"
+             f"       Files on PyPI: {available}\n"
+             "       Pin a different version, or write this resource by hand with "
+             "the platform wheel you want.")
 
 
 def _rb_str(value: str) -> str:
@@ -247,9 +322,17 @@ def default_test_command(name: str) -> str:
     return f"#{{bin}}/{name} --version"
 
 
+# Marker the update workflows grep for to recover a formula's extras. Homebrew
+# infers the package name for `brew update-python-resources` from the formula's
+# stable URL, which carries no extras, so a bump would otherwise re-resolve the
+# base requirement only and drop every resource that exists solely for an extra.
+EXTRAS_MARKER = "# homebrew-tap:extras="
+
+
 def render(name: str, info: dict, sdist_url: str, sdist_sha: str,
            python_formula: str, resources: list[tuple[str, str, str]],
-           build_deps: list[str], test_command: str | None = None) -> str:
+           build_deps: list[str], test_command: str | None = None,
+           extras: str = "") -> str:
     """Render the Ruby formula source."""
     test_command = test_command or default_test_command(name)
     homepage = (info.get("project_urls") or {}).get("Homepage") \
@@ -258,6 +341,16 @@ def render(name: str, info: dict, sdist_url: str, sdist_sha: str,
         f"class {class_name(name)} < Formula",
         "  include Language::Python::Virtualenv",
         "",
+    ]
+    if extras:
+        lines += [
+            f"  {EXTRAS_MARKER}{extras}",
+            "  # ^ read by update-formulas.yml / update-formula-dispatch.yml, which",
+            "  #   pass it to `brew update-python-resources --package-name` so a",
+            "  #   version bump keeps the resources these extras pull in.",
+            "",
+        ]
+    lines += [
         f'  desc "{_rb_str(clean_desc(info["summary"] or ""))}"',
         f'  homepage "{_rb_str(homepage)}"',
         f'  url "{_rb_str(sdist_url)}"',
@@ -409,7 +502,7 @@ def main() -> None:
     out = repo / "Formula" / f"{name}.rb"
     out.write_text(
         render(name, info, sdist_url, sdist_sha, python_formula, resources,
-               build_deps, args.test_command))
+               build_deps, args.test_command, args.extras))
     print(f"==> Wrote {out.relative_to(repo)} "
           f"({len(resources)} resources, {python_formula})")
 

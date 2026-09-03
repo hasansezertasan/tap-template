@@ -89,7 +89,9 @@ jobs:
           echo "updates=$updates_json" >> "$GITHUB_OUTPUT"
           echo "has_updates=$has_updates" >> "$GITHUB_OUTPUT"
   update-formulas:
-    timeout-minutes: 20
+    # Builds every bumped formula from source now, not just audits it, and a
+    # scheduled run can bump several.
+    timeout-minutes: 90
     name: Update formulas
     # macOS runner: brew update-python-resources re-resolves each formula's
     # dependency tree on the host platform. macOS-only formulae can pin
@@ -141,13 +143,31 @@ jobs:
               # and revert rather than shipping the bump.
               resources_ok=true
               if grep -q "virtualenv_install_with_resources" "Formula/${formula}.rb"; then
-                brew update-python-resources "$ref" || resources_ok=false
+                # Recover the extras the formula was scaffolded with. Homebrew
+                # infers the package name from the stable URL, which carries no
+                # extras, so a bare re-resolve drops every extras-only resource.
+                extras=$(sed -n 's/^[[:space:]]*# homebrew-tap:extras=//p' \
+                  "Formula/${formula}.rb" | head -1)
+                if [ -n "$extras" ]; then
+                  brew update-python-resources \
+                    --package-name="${formula}[${extras}]" "$ref" || resources_ok=false
+                else
+                  brew update-python-resources "$ref" || resources_ok=false
+                fi
               fi
-              if [ "$resources_ok" = true ] && brew audit --strict --online "$ref"; then
+              # `brew audit` is static: it never compiles a resource. Build and
+              # test the bump here so a dependency that fails to build cannot
+              # reach a pull request looking verified.
+              if [ "$resources_ok" = true ] \
+                && brew audit --strict --online "$ref" \
+                && brew install --build-from-source "$ref" \
+                && brew test "$ref"; then
                 echo "Updated $formula to $latest"
+                brew uninstall --force "$ref" || true
               else
                 echo "::warning::$formula bumped to $latest but failed resource" \
-                  "resolution or audit; reverting"
+                  "resolution, audit, build, or test; reverting"
+                brew uninstall --force "$ref" || true
                 git checkout -- "Formula/${formula}.rb"
               fi
             else
@@ -169,6 +189,12 @@ jobs:
             ```json
             ${{ needs.check-updates.outputs.updates }}
             ```
+
+            Each bump was audited, built from source, and tested in the workflow
+            run that opened this PR. Bottles are **not** built here: a PR opened
+            with `GITHUB_TOKEN` does not trigger `tests.yml`. Close and reopen
+            this PR (or push to its branch) to run the bottle build before
+            applying the `pr-pull` label.
 
             ---
             *This PR was automatically created by the update-formulas workflow.*
