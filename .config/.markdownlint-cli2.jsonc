@@ -1,0 +1,10 @@
+{
+  // MD013 (line length) is disabled: prose docs (README, ADRs, research notes)
+  // wrap at whatever width reads well rather than a fixed column.
+  "config": {
+    "default": true,
+    "MD013": false,
+  },
+  "globs": ["**/*.md", "**/*.markdown"],
+  "gitignore": true,
+}

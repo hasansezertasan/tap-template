@@ -1,0 +1,54 @@
+[tools]
+action-validator = "latest"
+actionlint = "latest"
+shellcheck = "latest"
+yamlfmt = "latest"
+yamllint = "latest"
+zizmor = "latest"
+
+[tasks."add-formula"]
+description = "Scaffold a fully-resourced formula from a PyPI package"
+run = "python3 scripts/add_formula.py"
+
+[tasks."add-cask"]
+description = "Scaffold a cask from a GitHub release (prebuilt macOS app)"
+run = "python3 scripts/add_cask.py"
+
+[tasks."check-boilerplate"]
+description = "Verify Cobo-managed files match cobo.lock"
+# Pinned to match scripts.yml, so a local check and CI agree on the renderer.
+run = "uvx cobo==0.5.0 check"
+
+[tasks."hooks"]
+description = "Install the prek git hooks"
+run = "uvx prek install"
+
+[tasks."lint"]
+description = "Run every prek hook across the whole repository"
+run = "uvx prek run --all-files"
+
+[tasks."style"]
+description = "Format and lint all YAML files"
+run = "mise run style:fix && mise run style:check"
+
+[tasks."style:fix"]
+description = "Format YAML files in place"
+run = "yamlfmt -conf .config/.yamlfmt.yml ."
+
+[tasks."style:check"]
+description = "Lint YAML and GitHub Actions files (no fixes)"
+# A TOML *literal* multi-line string: the find below needs real backslashes.
+run = '''
+#!/usr/bin/env bash
+set -e
+echo "Running yamllint..."
+yamllint -c .config/.yamllint.yaml .
+echo "Running actionlint..."
+actionlint
+echo "Running action-validator..."
+# GitHub accepts both extensions for workflows; neither may bypass validation.
+find .github/workflows \( -name '*.yml' -o -name '*.yaml' \) -exec action-validator {} +
+echo "Running zizmor..."
+zizmor --persona=regular .github/workflows
+echo "All checks passed!"
+'''

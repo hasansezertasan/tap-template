@@ -1,0 +1,30 @@
+---
+name: Boilerplate Drift
+# Runs `cobo check` to detect when the Cobo-managed `.gitignore` has drifted
+# from the upstream github/gitignore templates recorded in cobo.lock.
+# `cobo update` hits the network and is inherently flaky, so this runs weekly
+# and on demand — never on pull_request. A failure is a maintenance signal
+# (regenerate with `cobo update && cobo sync`), not a merge blocker.
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Monday 07:00 UTC (ahead of the update-* jobs at 09:00).
+    - cron: "0 7 * * 1"
+permissions: {}
+jobs:
+  drift:
+    name: Check boilerplate drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+      - name: Refresh Cobo sources
+        run: uvx cobo update
+      - name: Check for drift
+        run: uvx cobo check
