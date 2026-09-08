@@ -4,6 +4,20 @@ A reusable starting point for a third-party Homebrew tap.
 It supports Python CLI formulae, macOS application casks, bottle publishing,
 scheduled updates, release-triggered updates, and a generated package catalog.
 
+## Quick start
+
+```sh
+# 1. Create a repo from this template named homebrew-<tap>
+# 2. Add a formula or cask
+python3 scripts/add_formula.py <package>
+# 3. Generate the package table and commit
+python3 scripts/gen_readme_packages.py
+git add Formula/ README.md && git commit -m "feat: add <package> formula"
+git push
+```
+
+The full setup details are in [Start a tap](#start-a-tap) below.
+
 ## Start a tap
 
 1. Create a repository from this template. Name it `homebrew-<tap>` so users can
