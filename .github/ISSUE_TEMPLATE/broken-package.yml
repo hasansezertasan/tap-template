@@ -20,7 +20,7 @@ body:
     id: error
     attributes:
       label: Error output
-      description: Paste the relevant output from `brew install` or `brew test`.
+      description: Paste the failing command and relevant output (install, build, test, or runtime).
       render: text
     validations:
       required: true

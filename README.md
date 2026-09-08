@@ -8,7 +8,7 @@ scheduled updates, release-triggered updates, and a generated package catalog.
 
 ```sh
 # 1. Create a repo from this template named homebrew-<tap>
-# 2. Add a formula or cask
+# 2. Add a formula
 python3 scripts/add_formula.py <package>
 # 3. Generate the package table and commit
 python3 scripts/gen_readme_packages.py
@@ -16,7 +16,8 @@ git add Formula/ README.md && git commit -m "feat: add <package> formula"
 git push
 ```
 
-The full setup details are in [Start a tap](#start-a-tap) below.
+For casks, see [Add a cask](#add-a-cask). Full setup details are in
+[Start a tap](#start-a-tap) below.
 
 ## Start a tap
 
