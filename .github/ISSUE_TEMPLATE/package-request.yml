@@ -30,5 +30,6 @@ body:
       options:
         - Formula (CLI tool, built from source)
         - Cask (macOS application)
+        - Both
     validations:
       required: true

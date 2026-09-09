@@ -7,7 +7,9 @@ scheduled updates, release-triggered updates, and a generated package catalog.
 ## Quick start
 
 ```sh
-# 1. Create a repo from this template named homebrew-<tap>
+# 1. Create a repo from this template named homebrew-<tap>, then clone it
+git clone https://github.com/<owner>/homebrew-<tap>.git
+cd homebrew-<tap>
 # 2. Add a formula
 python3 scripts/add_formula.py <package>
 # 3. Generate the package table and commit
