@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Homebrew Discussions
+    url: https://github.com/orgs/Homebrew/discussions
+    about: General Homebrew questions (not specific to this tap).
